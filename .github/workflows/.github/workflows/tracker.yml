@@ -1,1 +1,99 @@
+name: Binance 10% Tracker 24/7
 
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Binance prices
+        run: |
+          #!/bin/bash
+          
+          BOT_TOKEN="ВАШ_ТОКЕН_СЮДА"       ← ЗАМЕНИТЕ ЭТО
+          CHAT_ID="ВАШ_CHAT_ID_СЮДА"       ← ЗАМЕНИТЕ ЭТО
+          THRESHOLD=10
+          
+          # Получаем цены
+          curl -s https://api.binance.com/api/v3/ticker/price > /tmp/prices.json
+          
+          python3 << 'PYEOF'
+          import json, os, time
+          from datetime import datetime
+          
+          BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+          CHAT_ID = os.environ.get('CHAT_ID', '')
+          THRESHOLD = 10
+          
+          with open('/tmp/prices.json') as f:
+              prices = json.load(f)
+          
+          # Загружаем историю
+          history = {}
+          if os.path.exists('history.json'):
+              with open('history.json') as f:
+                  history = json.load(f)
+          
+          now = time.time()
+          signals_up = []
+          signals_down = []
+          
+          for item in prices:
+              symbol = item['symbol']
+              if not symbol.endswith('USDT'):
+                  continue
+              
+              price = float(item['price'])
+              
+              if symbol not in history:
+                  history[symbol] = []
+              
+              history[symbol].append({'time': now, 'price': price})
+              
+              # Оставляем только последние 2 часа
+              cutoff = now - 7200
+              history[symbol] = [p for p in history[symbol] if p['time'] > cutoff]
+              
+              if len(history[symbol]) >= 2:
+                  old_price = history[symbol][0]['price']
+                  age_min = (now - history[symbol][0]['time']) / 60
+                  
+                  if age_min >= 30:
+                      change = (price - old_price) / old_price * 100
+                      
+                      if change >= THRESHOLD:
+                          signals_up.append(f"🟢 {symbol}: +{change:.2f}%")
+                      elif change <= -THRESHOLD:
+                          signals_down.append(f"🔴 {symbol}: {change:.2f}%")
+          
+          # Сохраняем историю
+          with open('history.json', 'w') as f:
+              json.dump(history, f)
+          
+          # Отправка в Telegram
+          if signals_up or signals_down:
+              msg = f"📊 {datetime.now().strftime('%H:%M')}\n\n"
+              
+              if signals_up:
+                  msg += "🟢 РОСТ 10%+ за час:\n" + "\n".join(signals_up[:5])
+              if signals_down:
+                  if signals_up:
+                      msg += "\n\n"
+                  msg += "🔴 ПАДЕНИЕ 10%+ за час:\n" + "\n".join(signals_down[:5])
+              
+              import urllib.request
+              url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+              data = json.dumps({
+                  'chat_id': CHAT_ID,
+                  'text': msg,
+                  'parse_mode': 'HTML'
+              }).encode()
+              urllib.request.urlopen(url, data)
+              
+              print(f"Sent {len(signals_up) + len(signals_down)} signals")
+          else:
+              print("No signals")
+          PYEOF
